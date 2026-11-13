@@ -59,7 +59,8 @@ def test_scorers_score_what_they_promise():
     assert evaluate([{"type": "length", "max_words": 2}], "HELLO BRAVE WORLD")[1] is False
     assert evaluate([{"type": "latency", "max_ms": 100}], "x", {"latency_ms": 50})[1] is True
     assert evaluate([{"type": "non_empty"}], "   ")[1] is False
-    assert evaluate([{"type": "word_overlap", "value": "refunds take five days", "min": 0.4}], "five days")[1] is False
+    # "five days" against the longer reference keeps recall low, so f1 stays under 0.9
+    assert evaluate([{"type": "word_overlap", "value": "refunds take five days", "min": 0.9}], "five days")[1] is False
     assert evaluate([{"type": "word_overlap", "value": "five days", "min": 0.4}], "five days")[1] is True
 
 
@@ -164,4 +165,5 @@ def test_reports_are_written_and_escaped(tmp_path):
     paths = write_report(tmp_path / "out", summary)
     with open(paths["json"], encoding="utf-8") as handle:
         assert json.load(handle)["suite"] == "<script>"
-    assert "pass" in open(paths["markdown"], encoding="utf-8").read()
+    with open(paths["markdown"], encoding="utf-8") as handle:
+        assert "pass" in handle.read()
