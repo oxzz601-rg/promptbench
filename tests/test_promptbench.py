@@ -5,7 +5,7 @@ import pytest
 
 from promptbench import load_suite, parse_suite, run_suite
 from promptbench.core import CommandProvider, EchoProvider, ProviderError, Reply, RunSummary
-from promptbench.report import compare, html_report, markdown
+from promptbench.report import compare, html_report, markdown, write_report
 from promptbench.scorers import evaluate, extract_json
 from promptbench.suite import SuiteError
 
@@ -19,7 +19,9 @@ def test_expect_block_becomes_scorers():
 
 
 def test_defaults_threshold_and_system():
-    suite = parse_suite({"defaults": {"threshold": 0.5, "system": "be terse"}, "cases": [{"id": "a", "prompt": "hi"}]})
+    suite = parse_suite(
+        {"defaults": {"threshold": 0.5, "system": "be terse"}, "cases": [{"id": "a", "prompt": "hi"}]}
+    )
     assert suite.cases[0].threshold == 0.5
     assert suite.defaults["system"] == "be terse"
     assert suite.cases[0].scorers == ({"type": "non_empty"},)
@@ -54,15 +56,19 @@ def test_scorers_score_what_they_promise():
     assert evaluate([{"type": "numeric", "value": 42}], "the answer is 42.")[1] is True
     assert evaluate([{"type": "length", "max_words": 2}], "one two")[1] is True
     assert evaluate([{"type": "length", "max_words": 2}], "one two three")[1] is False
+    assert evaluate([{"type": "length", "max_words": 2}], "HELLO BRAVE WORLD")[1] is False
     assert evaluate([{"type": "latency", "max_ms": 100}], "x", {"latency_ms": 50})[1] is True
     assert evaluate([{"type": "non_empty"}], "   ")[1] is False
+    assert evaluate([{"type": "word_overlap", "value": "refunds take five days", "min": 0.4}], "five days")[1] is False
+    assert evaluate([{"type": "word_overlap", "value": "five days", "min": 0.4}], "five days")[1] is True
 
 
 def test_json_scorer_finds_json_in_prose_and_fences():
     assert extract_json('here you go:\n```json\n{"a": [1, 2]}\n```') == {"a": [1, 2]}
     assert extract_json('Sure! {"ok": true, "n": 2} hope that helps')["n"] == 2
-    score, passed, details = evaluate([{"type": "json", "value": {"ok": True, "n": 3}}], '{"ok": true, "n": 2}')
+    score, passed, _ = evaluate([{"type": "json", "value": {"ok": True, "n": 3}}], '{"ok": true, "n": 2}')
     assert passed is False and round(score, 2) == 0.5
+    assert evaluate([{"type": "json", "value": {"name": {"$contains": "ada"}}}], '{"name": "Ada Lovelace"}')[1] is True
 
 
 def test_unknown_scorer_is_a_programming_error():
@@ -70,19 +76,20 @@ def test_unknown_scorer_is_a_programming_error():
         evaluate([{"type": "vibes"}], "x")
 
 
-def test_run_suite_aggregates_and_orders_results():
+def test_run_suite_orders_and_scores_results():
     suite = parse_suite(
         {
             "cases": [
                 {"id": "first", "prompt": "say hi", "expect": {"contains": "hi"}},
-                {"id": "second", "prompt": "say bye", "expect": {"contains": "bye"}},
+                {"id": "second", "prompt": "say hi", "expect": {"contains": "zzz"}, "tags": ["strict"]},
             ]
         }
     )
     summary = run_suite(suite, EchoProvider(), concurrency=2)
     assert [case.case_id for case in summary.cases] == ["first", "second"]
-    assert summary.passed == 0 and summary.total == 2
+    assert summary.passed == 1 and summary.pass_rate == 0.5
     assert summary.cases[0].runs[0].output == "[echo] say hi"
+    assert summary.by_tag()["strict"]["passed"] == 0
 
 
 def test_provider_failures_are_recorded_not_raised():
@@ -108,7 +115,7 @@ def test_repeats_detect_flaky_cases():
             self.calls += 1
             return Reply("yes" if self.calls % 2 else "no")
 
-    suite = parse_suite({"cases": [{"id": "a", "prompt": "x", "expect": {"exact": "yes"}}]})
+    suite = parse_suite({"cases": [{"id": "a", "prompt": "x", "expect": {"text": "yes"}}]})
     summary = run_suite(suite, Flaky(), concurrency=1, repeats=2)
     assert summary.cases[0].stability == 0.5
     assert summary.cases[0].passed is False
@@ -152,10 +159,9 @@ def test_reports_are_written_and_escaped(tmp_path):
     summary = RunSummary.from_dict(
         {"suite": "<script>", "provider": "echo", "cases": [{"id": "<b>", "passed": True, "score": 1.0}]}
     )
-    text = markdown(summary)
-    assert "| pass | `<b>` |" in text
+    assert "| pass | `<b>` |" in markdown(summary)
     assert "&lt;b&gt;" in html_report(summary)
-    from promptbench.report import write_report
-
     paths = write_report(tmp_path / "out", summary)
-    assert json.loads(open(paths["json"], encoding="utf-8").read())["suite"] == "<script>"
+    with open(paths["json"], encoding="utf-8") as handle:
+        assert json.load(handle)["suite"] == "<script>"
+    assert "pass" in open(paths["markdown"], encoding="utf-8").read()
