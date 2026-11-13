@@ -5,9 +5,9 @@
 When you change a prompt, a model or a retrieval step, the only question that matters is: did anything get worse? `promptbench` answers it with deterministic checks, repeat runs, retries and a baseline comparison that fails the build when quality drops.
 
 ```bash
-promptbench init                     # write a starter suite
-promptbench run suite.json --provider echo
-promptbench run suite.json --provider openai --model gpt-4o-mini --baseline results.json
+promptbench init                                          # writes promptbench.suite.json
+promptbench run promptbench.suite.json --provider echo
+promptbench run suite.json --provider openai --model gpt-4o-mini --baseline baseline/run.json
 ```
 
 No API key needed to see it work: the `echo` provider reflects the prompt back, and the `command` provider shells out to anything that reads a prompt on stdin and writes an answer on stdout, which is how you benchmark a local model, a CLI, or your own RAG pipeline.
@@ -18,9 +18,9 @@ A notebook gives you a score for one prompt on one day. A suite gives you:
 
 - **The same cases every time**, in version control next to the prompt.
 - **Assertions that do not need an LLM to judge them**: substring checks, JSON shape, regex, numeric tolerance, length, word overlap, latency. Cheap, deterministic, and impossible to argue with.
-- **A pass threshold per case**, so one hard case does not hide behind an average.
-- **Repeats and retries**, because a single sample of a temperature-0.7 model means nothing.
-- **A baseline diff**: `--baseline` marks each case as new, fixed, broken or unchanged and exits non-zero when anything regressed.
+- **A threshold per case**, so one hard case cannot hide behind a good average.
+- **Repeats and retries**, because a single sample of a temperature-0.7 model means nothing. The report shows a stability percentage next to each score.
+- **A baseline diff**: `--baseline` marks every case as new, fixed, broken or unchanged and exits non-zero when anything regressed.
 
 ## Install
 
@@ -46,31 +46,44 @@ Python 3.9+. The OpenAI provider uses plain HTTP, so no SDK is required.
     {
       "id": "json-shape",
       "prompt": "Return JSON: {\"ok\": true, \"items\": [1, 2, 3]}",
-      "expect": {"json": {"ok": true, "items.2": 3}}
+      "expect": {"json": {"ok": true, "items.2": 3}},
+      "tags": ["format"]
     }
   ]
 }
 ```
 
-Every key in `expect` is a scorer; a case passes when its score is at least its `threshold` (default `1.0`, fully satisfied). `bad_*`? No: use `not_contains`.
+Each key inside `expect` is a scorer (`max_words` is a `length` option, `json` takes dotted paths). A case passes when its score reaches its `threshold`, default `1.0`. Suites are JSON; `defaults` apply to every case and can be overridden per case.
+
+```bash
+promptbench init      # starter suite to edit
+promptbench validate  promptbench.suite.json
+promptbench scorers   # what you can assert on
+```
 
 ## Scorers
 
 ```console
 $ promptbench scorers
-contains       response contains the string(s) or every item of the list
-not_contains   none of the strings appear
-regex          a regular expression matches
-json           dotted paths exist and equal the expected values
-exact          response equals the expected string after trimming
-numeric        numbers in the response are within a tolerance
-length         character or word count stays inside the bounds
-word_overlap   share of expected words present (0 to 1)
-latency        response time under a limit in milliseconds
-non_empty      the model said something at all
+
+  contains       exact          json           latency        length
+  non_empty      not_contains   numeric        regex          word_overlap
 ```
 
-Scores are numbers between 0 and 1, so the report can show partial credit instead of a bare pass/fail. `latency` and `word_overlap` are the two you will tune constantly; the rest are guardrails.
+| Scorer | Passes when |
+| --- | --- |
+| `contains` | the reply contains the string, or every item of a list |
+| `not_contains` | none of the strings appear |
+| `regex` | a regular expression matches |
+| `json` | dotted paths exist and equal the expected values |
+| `exact` | the reply equals the expected text after trimming |
+| `numeric` | numbers in the reply are within a tolerance |
+| `length` | character or word count stays inside the bounds |
+| `word_overlap` | share of expected words present, 0 to 1 |
+| `latency` | reply time under a limit in milliseconds |
+| `non_empty` | the model said something at all |
+
+Scores are numbers between 0 and 1, so the report can show partial credit instead of a bare pass/fail. `word_overlap` and `latency` are the two you will tune; the rest are guardrails.
 
 ## Providers
 
@@ -82,47 +95,59 @@ Scores are numbers between 0 and 1, so the report can show partial credit instea
 
 ```bash
 # A local model, no API key
-export PROMPT_COMMAND='python examples/demo_provider.py'
-promptbench run examples/starter.json --provider command --command "$PROMPT_COMMAND"
+promptbench run examples/starter.json --provider command \
+  --command "python examples/demo_provider.py"
 
 # A hosted model
 export OPENAI_API_KEY=sk-...
 promptbench run suite.json --provider openai --model gpt-4o-mini --temperature 0
 ```
 
-Keys are read from the environment variable named by `--api-key-env` (default `OPENAI_API_KEY`); they never appear in the report.
+Keys are read from the environment variable named by `--api-key-env` (default `OPENAI_API_KEY`) and never appear in the report.
 
 ## Running in CI
 
-```yaml
-- run: promptbench run suite.json --provider openai --model gpt-4o-mini \
-         --baseline baseline.json --fail-under 0.95 --out report.json
+```bash
+promptbench run suite.json --provider openai --model gpt-4o-mini \
+  --baseline baseline/run.json --fail-under 0.95 --out results
 ```
 
-- `--baseline` compares against a previous report and fails on any regression.
+- `--baseline` diffs against a previous `run.json` and fails on any regression.
 - `--fail-under` fails when the mean score drops below the number.
-- `--out` writes Markdown, HTML and JSON next to each other (`report.md`, `report.html`, `report.json`).
+- `--out DIR` writes `DIR/run.json` (the next baseline) and `DIR/report.html` (to send to a person). The Markdown table is printed to stdout, so piping it into a pull request comment is a one-liner.
+- `--json` prints the machine-readable report instead of the table.
 
-Exit codes: `0` everything passed, `1` a failure, regression or threshold miss, `2` invalid usage or an unreadable suite. That is the whole integration.
+Exit codes: `0` everything passed, `1` a failure, regression or threshold miss, `2` invalid usage or an unreadable suite.
 
 ## Reading the report
 
 ```
-assistant: 12/12 passed (mean 0.98)
-  capital-france        pass  1.00  contains
-  json-shape            pass  1.00  json
-  refund-policy         FAIL  0.40  word_overlap below 0.85
-    expected: cite the 30 day window
-    got:      you can get a refund
+## starter: 2/3 passed (67%)
+
+provider `command` | mean score 0.833 | 0.0s total
+
+| result | case | score | stability | latency | tags |
+| --- | --- | --- | --- | --- | --- |
+| FAIL | `capital-france` | 0.00 | 0% | 29ms | knowledge |
+| pass | `json-shape` | 1.00 | 100% | 31ms | format |
+| pass | `refuses-unknown` | 1.00 | 100% | 28ms | safety |
+
+### Failures
+
+**`capital-france`**
+- contains (score 0.00): missing: 'Paris'
+- length (score 0.00): max_words: 13 > 3
+- reply: `[echo] What is the capital of France? Reply with the city name only.`
 ```
 
-Markdown for a pull request comment, HTML for something you can send to a colleague, JSON for the next run's baseline.
+Totals by tag, a failures section with the offending scorer and the actual reply, and a `Versus baseline` table appear when there is something to say. Markdown for the terminal or a PR comment, HTML for a colleague, JSON for the next run.
 
 ## Limits
 
-- The scorers are lexical. They catch regressions, broken JSON, truncation and drift; they do not judge whether prose is *good*. Pair them with a human review for open-ended writing.
+- The scorers are lexical. They catch regressions, broken JSON, truncation and drift; they do not judge whether prose is *good*. Pair them with human review for open-ended writing.
 - One prompt per case. Multi-turn conversations are out of scope.
 - No hosted dashboard and no database: reports are files, which is the point.
+- A passing suite is evidence of stability, not of quality. Write the cases by hand and keep them small enough to read.
 
 ## Tests
 
