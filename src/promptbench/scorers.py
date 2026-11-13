@@ -1,8 +1,8 @@
 """Deterministic scorers.
 
 Each scorer is called as ``scorer(config, output, context)`` and returns
-``(score, detail)`` where score is a float in ``[0, 1]``. Fractional scores are
-partial credit: the weighted mean is compared against the case threshold.
+``(score, detail)`` where score is in ``[0, 1]``. Fractional scores are partial
+credit: the weighted mean is compared against the case threshold.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import unicodedata
 
 _NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 _WORD = re.compile(r"[a-z0-9']+")
+_SPACE = re.compile(r"\S+")
 
 
 def normalize(text):
@@ -83,7 +84,7 @@ def score_regex(cfg, output, ctx):
 
 
 def extract_json(text):
-    """Pull the first JSON value out of a reply, tolerating prose and fences."""
+    """Pull the first JSON value out of a reply, tolerating prose and code fences."""
     text = str(text).strip()
     if text.startswith("```"):
         lines = text.splitlines()[1:]
@@ -176,10 +177,9 @@ def score_json(cfg, output, ctx):
             continue
         if not _matches(actual, expected, tolerance):
             problems.append("{} = {!r}, wanted {!r}".format(path, actual, expected))
-    score = (len(paths) - len(problems)) / len(paths)
     if not problems:
         return 1.0, "all {} field(s) match".format(len(paths))
-    return score, "; ".join(problems[:6])
+    return (len(paths) - len(problems)) / len(paths), "; ".join(problems[:6])
 
 
 def score_numeric(cfg, output, ctx):
@@ -198,8 +198,9 @@ def score_numeric(cfg, output, ctx):
 
 
 def score_length(cfg, output, ctx):
-    words = len(_WORD.findall(str(output)))
-    chars = len(str(output))
+    text = str(output)
+    words = len(_SPACE.findall(text))
+    chars = len(text)
     problems = []
     for key, actual in (("max_chars", chars), ("min_chars", chars), ("max_words", words), ("min_words", words)):
         if key in cfg:
